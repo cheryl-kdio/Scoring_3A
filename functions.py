@@ -845,11 +845,84 @@ def perform_kruskal_wallis(df, continuous_var,target_name):
     result_df = pd.DataFrame(kruskal_result,columns=["Columns","Stat","Pvalue"])
     return result_df
 
+
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+def select_variables_and_plot_corr_matrix(pearson_res, kruskal_results, corr_threshold=0.6,plot=True):
+    """
+    Sélectionne des variables dont la corrélation est inférieure à un seuil donné, 
+    en utilisant les résultats de Kruskal-Wallis pour déterminer la variable la plus pertinente
+    parmi celles corrélées.
+    
+    Args:
+    - pearson_res : DataFrame de la matrice de corrélation (Pearson)
+    - kruskal_results : DataFrame avec les résultats de Kruskal-Wallis ('Columns' et 'Stat')
+    - corr_threshold : Seuil de corrélation à respecter entre les variables
+    
+    Returns:
+    - best_variables : Liste des variables retenues avec une corrélation inférieure au seuil
+    """
+        # Initialisation des paires et de la statistique de Kruskal-Wallis
+    kruskal_stats = dict(zip(kruskal_results['Columns'], kruskal_results['Stat']))  # Convertir les résultats Kruskal-Wallis en dictionnaire
+
+    # Étape 1 : Extraire les variables corrélées avec une corrélation > corr_threshold
+    pearson_res_no_diag = pearson_res.where(np.triu(np.ones(pearson_res.shape), k=1).astype(bool))  # Supprimer la diagonale
+    high_corr_pairs = pearson_res_no_diag.stack()  # Convertir en format colonne
+    high_corr_pairs = high_corr_pairs[abs(high_corr_pairs) > corr_threshold]  # Filtrer les corrélations supérieures au seuil
+
+    # Identifier les variables non corrélées
+    all_vars = set(pearson_res.columns)  # Créer une liste de toutes les variables
+    corr_vars = set(high_corr_pairs.index.get_level_values(0)).union(set(high_corr_pairs.index.get_level_values(1)))  # Variables dans les paires corrélées
+    non_corr_vars = list(all_vars - corr_vars)  # Variables qui ne sont dans aucune paire corrélée
+
+    # Afficher les paires corrélées et leurs corrélations
+    print("Paires de variables fortement corrélées (|ρ| > {:.1f}) :".format(corr_threshold))
+    for pair, corr_value in high_corr_pairs.items():
+        print(f"Paire {pair}: Corrélation = {corr_value:.2f}")
+
+    # Étape 2 : Comparer les statistiques de test pour chaque paire
+    best_variables = []  # Liste des variables à retenir
+    for var1, var2 in high_corr_pairs.index:  # Parcourir les paires
+        stat_var1 = kruskal_stats.get(var1, 0)  # Récupérer la statistique de test pour var1
+        stat_var2 = kruskal_stats.get(var2, 0)  # Récupérer la statistique de test pour var2
+        
+        # Retenir la variable ayant la plus grande statistique
+        if stat_var1 >= stat_var2:
+            best_variables.append(var1)
+        else:
+            best_variables.append(var2)
+
+    # Supprimer les doublons des variables retenues et ajouter les non corrélées
+    best_variables = list(set(best_variables)) + non_corr_vars
+
+    # Afficher les résultats
+    print("\nVariables retenues après comparaison des statistiques de test Kruskal-Wallis :")
+    print(best_variables)
+    if plot :
+        # Étape 3 : Tracer la matrice de corrélation pour les variables retenues
+        selected_corr_matrix = pearson_res.loc[best_variables, best_variables]  # Filtrer la matrice de corrélation
+        plt.figure(figsize=(12, 10))
+
+        sns.heatmap(selected_corr_matrix, cmap='coolwarm', annot=True, fmt=".2f", linewidths=0.5)  # Heatmap
+        plt.title('Matrice de Corrélation (Variables Sélectionnées)')
+        plt.show()
+
+    # Retourner les variables retenues
+    return best_variables
+
+
+
 # Application de modèles
+
 import statsmodels.api as sm 
 from sklearn.metrics import auc
 from sklearn.metrics  import roc_curve
 from statsmodels.stats.outliers_influence import variance_inflation_factor
+
+
 
 def reg_logistique(df_train,var_cible,categorical_variables,numerical_variables):
     risk_drivers = categorical_variables + numerical_variables
