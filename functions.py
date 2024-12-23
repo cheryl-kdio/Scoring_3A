@@ -615,10 +615,13 @@ def discretize_with_iv_woe(X_train, cible,date, numerical_columns, id_client,bin
     discretized_data = X_train[[date,cible,id_client]].copy()
     discretized_columns = []
     non_discretized_columns = []
-
+    cutoffs_dict = {}
     for col in numerical_columns:
         # Appliquer la fonction iv_woe pour obtenir les points de coupure
         result = iv_woe(X_train[[col] + [cible]], cible, bins=bins, show_woe=False, epsilon=epsilon)
+
+        # Extract the cutoffs to a dict
+        cutoffs_dict[col] = result[1]["Cutoff"].unique()
 
         if result[1]["IV"].sum() != 0:  # Si l'IV n'est pas nul, discrétiser
             # Extraire les cutoffs (intervalles)
@@ -640,7 +643,7 @@ def discretize_with_iv_woe(X_train, cible,date, numerical_columns, id_client,bin
             discretized_data[col ] = X_train[col].copy()
             non_discretized_columns.append(col)
 
-    return discretized_data, discretized_columns, non_discretized_columns
+    return discretized_data, discretized_columns, non_discretized_columns,cutoffs_dict
 
 
 ############# Discrétisation avec la méthode ChiMerge
@@ -724,7 +727,37 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-def select_variables_and_plot_corr_matrix(pearson_res, kruskal_results, corr_threshold=0.6):
+def select_variables_to_drop(corr_mat, kruskal_res,threshold=0.7):
+    """
+    Trie les variables très corrélées entre elles
+    et sélectionne celles à supprimer en fonction des résultats de Kruskal-Wallis.
+    """
+    kruskal_res = kruskal_res.copy()
+
+    kruskal_res.set_index('Columns', inplace=True)
+    # Suppose that spearman_res is your DataFrame containing the Spearman correlations
+    # Mask to keep only the upper triangle (excluding the diagonal)
+    mask = np.triu(np.ones(corr_mat.shape), k=1).astype(bool)
+    high_corr = corr_mat.where(mask)
+
+    # Filter for correlations > threshold
+    high_corr_pairs = high_corr[abs(high_corr) >threshold].stack().index
+
+    #set() only to have unique values
+    numerical_to_drop = set()
+    for var1, var2 in high_corr_pairs:
+        if var1==var2:
+            continue
+        if abs(kruskal_res.loc[var1, 'Stat']) > abs(kruskal_res.loc[var2, 'Stat']):
+            numerical_to_drop.add(var2)
+        else:
+            numerical_to_drop.add(var1)
+    
+
+    kruskal_res.reset_index('Columns', inplace=True)
+    return numerical_to_drop
+
+def select_variables_and_plot_corr_matrix(pearson_res, kruskal_results, corr_threshold=0.6,plot=True,print_pairs=True):
     """
     Sélectionne des variables dont la corrélation est inférieure à un seuil donné, 
     en utilisant les résultats de Kruskal-Wallis pour déterminer la variable la plus pertinente
@@ -750,11 +783,11 @@ def select_variables_and_plot_corr_matrix(pearson_res, kruskal_results, corr_thr
     all_vars = set(pearson_res.columns)  # Créer une liste de toutes les variables
     corr_vars = set(high_corr_pairs.index.get_level_values(0)).union(set(high_corr_pairs.index.get_level_values(1)))  # Variables dans les paires corrélées
     non_corr_vars = list(all_vars - corr_vars)  # Variables qui ne sont dans aucune paire corrélée
-
-    # Afficher les paires corrélées et leurs corrélations
-    print("Paires de variables fortement corrélées (|ρ| > {:.1f}) :".format(corr_threshold))
-    for pair, corr_value in high_corr_pairs.items():
-        print(f"Paire {pair}: Corrélation = {corr_value:.2f}")
+    if print_pairs :
+        # Afficher les paires corrélées et leurs corrélations
+        print("Paires de variables fortement corrélées (|ρ| > {:.1f}) :".format(corr_threshold))
+        for pair, corr_value in high_corr_pairs.items():
+            print(f"Paire {pair}: Corrélation = {corr_value:.2f}")
 
     # Étape 2 : Comparer les statistiques de test pour chaque paire
     best_variables = []  # Liste des variables à retenir
@@ -776,16 +809,16 @@ def select_variables_and_plot_corr_matrix(pearson_res, kruskal_results, corr_thr
     print(best_variables)
 
     # Étape 3 : Tracer la matrice de corrélation pour les variables retenues
-    selected_corr_matrix = pearson_res.loc[best_variables, best_variables]  # Filtrer la matrice de corrélation
-    plt.figure(figsize=(12, 10))
+    if plot :
+        selected_corr_matrix = pearson_res.loc[best_variables, best_variables]  # Filtrer la matrice de corrélation
+        plt.figure(figsize=(12, 10))
 
-    sns.heatmap(selected_corr_matrix, cmap='coolwarm', annot=True, fmt=".2f", linewidths=0.5)  # Heatmap
-    plt.title('Matrice de Corrélation (Variables Sélectionnées)')
-    plt.show()
+        sns.heatmap(selected_corr_matrix, cmap='coolwarm', annot=True, fmt=".2f", linewidths=0.5)  # Heatmap
+        plt.title('Matrice de Corrélation (Variables Sélectionnées)')
+        plt.show()
 
     # Retourner les variables retenues
     return best_variables
-
 
 def discretize_with_intervals(data, intervals_by_variable, date, cible):
     """
@@ -844,75 +877,6 @@ def perform_kruskal_wallis(df, continuous_var,target_name):
         kruskal_result.append([col,statistic,pvalue])
     result_df = pd.DataFrame(kruskal_result,columns=["Columns","Stat","Pvalue"])
     return result_df
-
-
-import numpy as np
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-
-def select_variables_and_plot_corr_matrix(pearson_res, kruskal_results, corr_threshold=0.6,plot=True):
-    """
-    Sélectionne des variables dont la corrélation est inférieure à un seuil donné, 
-    en utilisant les résultats de Kruskal-Wallis pour déterminer la variable la plus pertinente
-    parmi celles corrélées.
-    
-    Args:
-    - pearson_res : DataFrame de la matrice de corrélation (Pearson)
-    - kruskal_results : DataFrame avec les résultats de Kruskal-Wallis ('Columns' et 'Stat')
-    - corr_threshold : Seuil de corrélation à respecter entre les variables
-    
-    Returns:
-    - best_variables : Liste des variables retenues avec une corrélation inférieure au seuil
-    """
-        # Initialisation des paires et de la statistique de Kruskal-Wallis
-    kruskal_stats = dict(zip(kruskal_results['Columns'], kruskal_results['Stat']))  # Convertir les résultats Kruskal-Wallis en dictionnaire
-
-    # Étape 1 : Extraire les variables corrélées avec une corrélation > corr_threshold
-    pearson_res_no_diag = pearson_res.where(np.triu(np.ones(pearson_res.shape), k=1).astype(bool))  # Supprimer la diagonale
-    high_corr_pairs = pearson_res_no_diag.stack()  # Convertir en format colonne
-    high_corr_pairs = high_corr_pairs[abs(high_corr_pairs) > corr_threshold]  # Filtrer les corrélations supérieures au seuil
-
-    # Identifier les variables non corrélées
-    all_vars = set(pearson_res.columns)  # Créer une liste de toutes les variables
-    corr_vars = set(high_corr_pairs.index.get_level_values(0)).union(set(high_corr_pairs.index.get_level_values(1)))  # Variables dans les paires corrélées
-    non_corr_vars = list(all_vars - corr_vars)  # Variables qui ne sont dans aucune paire corrélée
-
-    # Afficher les paires corrélées et leurs corrélations
-    print("Paires de variables fortement corrélées (|ρ| > {:.1f}) :".format(corr_threshold))
-    for pair, corr_value in high_corr_pairs.items():
-        print(f"Paire {pair}: Corrélation = {corr_value:.2f}")
-
-    # Étape 2 : Comparer les statistiques de test pour chaque paire
-    best_variables = []  # Liste des variables à retenir
-    for var1, var2 in high_corr_pairs.index:  # Parcourir les paires
-        stat_var1 = kruskal_stats.get(var1, 0)  # Récupérer la statistique de test pour var1
-        stat_var2 = kruskal_stats.get(var2, 0)  # Récupérer la statistique de test pour var2
-        
-        # Retenir la variable ayant la plus grande statistique
-        if stat_var1 >= stat_var2:
-            best_variables.append(var1)
-        else:
-            best_variables.append(var2)
-
-    # Supprimer les doublons des variables retenues et ajouter les non corrélées
-    best_variables = list(set(best_variables)) + non_corr_vars
-
-    # Afficher les résultats
-    print("\nVariables retenues après comparaison des statistiques de test Kruskal-Wallis :")
-    print(best_variables)
-    if plot :
-        # Étape 3 : Tracer la matrice de corrélation pour les variables retenues
-        selected_corr_matrix = pearson_res.loc[best_variables, best_variables]  # Filtrer la matrice de corrélation
-        plt.figure(figsize=(12, 10))
-
-        sns.heatmap(selected_corr_matrix, cmap='coolwarm', annot=True, fmt=".2f", linewidths=0.5)  # Heatmap
-        plt.title('Matrice de Corrélation (Variables Sélectionnées)')
-        plt.show()
-
-    # Retourner les variables retenues
-    return best_variables
-
 
 
 # Application de modèles
@@ -980,120 +944,4 @@ def reg_logistique(df_train,var_cible,categorical_variables,numerical_variables)
 
     return risk_drivers, pvaleur_model, pvaleurs_coeffs.to_dict(),flag_significativite,vif,flag_VIF,roc_auc_train, fpr_train,tpr_train,model
 
-
-
-
-import pandas as pd
-
-import numpy as np
-
-from scipy.stats import chi2_contingency
-
-
-
-def discretize_variable(df, var_continuous, cible, n_classes=5, risk_threshold=0.3, min_class_size=0.05):
-
-    # DÃ©couper en N classes en utilisant pd.qcut()
-
-    df['class_bins'] = pd.qcut(df[var_continuous], q=n_classes, duplicates='drop')
-
-
-
-    # Calculer le taux de risque pour chaque classe
-
-    risk_rates = df.groupby('class_bins')[cible].mean()
-
-
-
-    # Regrouper les classes en fonction de leur poids cumulÃ© et de leur risque
-
-    grouped_classes = []
-
-    cumulative_weight = 0
-
-    group = []
-
-
-
-    for i, (interval, risk) in enumerate(risk_rates.items()):
-
-        group.append(interval)
-
-        cumulative_weight += df[df['class_bins'] == interval].shape[0] / df.shape[0]
-
-
-
-        if cumulative_weight >= min_class_size or i == len(risk_rates) - 1:
-
-            grouped_classes.append(group)
-
-            group = []
-
-            cumulative_weight = 0
-
-
-
-    # Filtrer les groupes avec un Ã©cart de risque significatif
-
-    final_groups = []
-
-    for group in grouped_classes:
-
-        if len(group) > 1:
-
-            group_risks = risk_rates[group]
-
-            relative_risk_diff = np.abs(group_risks.max() - group_risks.min()) / group_risks.mean()
-
-
-
-            if relative_risk_diff >= risk_threshold:
-
-                final_groups.append(group)
-
-
-
-    # Calculer les indicateurs statistiques Tschuprow et Cramer
-
-    def tschuprow_t(x, y):
-
-        contingency = pd.crosstab(x, y)
-
-        chi2, _, _, _ = chi2_contingency(contingency)
-
-        n = contingency.sum().sum()
-
-        return np.sqrt(chi2 / (n * min(contingency.shape)))
-
-
-
-    def cramers_v(x, y):
-
-        contingency = pd.crosstab(x, y)
-
-        chi2, _, _, _ = chi2_contingency(contingency)
-
-        n = contingency.sum().sum()
-
-        return np.sqrt(chi2 / (n * min(contingency.shape)))
-
-
-
-    tschuprow_t_values = []
-
-    cramers_v_values = []
-
-
-
-    for group in final_groups:
-
-        df['grouped_bins'] = pd.cut(df[var_continuous], bins=np.array([g.left for g in group] + [group[-1].right]), include_lowest=True)
-
-        tschuprow_t_values.append(tschuprow_t(df['grouped_bins'], df[cible]))
-
-        cramers_v_values.append(cramers_v(df['grouped_bins'], df[cible]))
-
-
-
-    return final_groups, tschuprow_t_values, cramers_v_values
 
