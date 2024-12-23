@@ -569,6 +569,70 @@ def discretize_by_groups(df, cat_var, grouped_modalities,date,cible,id_client):
     return temp_df
 
 
+
+import pandas as pd
+import numpy as np
+
+def quantile_discretization_with_target(df, var, cible, n_quantiles=4, seuil=0.1):
+    """
+    Discrétisation basée sur les quantiles optimisée pour discriminer en fonction de la cible.
+
+    :param df: DataFrame pandas contenant les données.
+    :param var: Nom de la variable quantitative à discrétiser.
+    :param cible: Nom de la variable cible.
+    :param n_quantiles: Nombre initial de quantiles (classes).
+    :param seuil: Seuil de similarité pour regrouper les classes adjacentes (écart relatif entre proportions cibles).
+    :return: DataFrame avec les intervalles discrétisés et leurs proportions cibles.
+    """
+    # Calcul des quantiles
+    df['quantile_class'] = pd.qcut(df[var], q=n_quantiles, duplicates='drop')
+
+    # Calcul des proportions cibles pour chaque quantile
+    quantile_stats = df.groupby('quantile_class')[cible].mean().reset_index()
+    quantile_stats['count'] = df.groupby('quantile_class')[cible].count().values
+
+    # Fusion des classes adjacentes si leurs proportions cibles sont similaires
+    quantile_stats = quantile_stats.sort_values(by='quantile_class')
+    quantile_stats['group'] = 0
+    current_group = 0
+
+    for i in range(1, len(quantile_stats)):
+        prev_proportion = quantile_stats.loc[i - 1, cible]
+        curr_proportion = quantile_stats.loc[i, cible]
+
+        # Calcul de l'écart relatif
+        relative_gap = abs(curr_proportion - prev_proportion) / max(prev_proportion, curr_proportion)
+
+        if relative_gap < seuil:
+            quantile_stats.loc[i, 'group'] = current_group
+        else:
+            current_group += 1
+            quantile_stats.loc[i, 'group'] = current_group
+
+    # Création des intervalles fusionnés
+    merged_intervals = quantile_stats.groupby('group').agg({
+        'quantile_class': lambda x: pd.Interval(left=min(x.cat.categories.left), 
+                                                right=max(x.cat.categories.right), 
+                                                closed=x.cat.categories[0].closed),
+        cible: 'mean',
+        'count': 'sum'
+    }).reset_index()
+
+    return merged_intervals
+
+# Exemple d'utilisation
+if __name__ == "__main__":
+    # Exemple de données
+    data = {
+        'var': [2.5, 3.6, 7.8, 1.1, 4.5, 6.2, 9.0, 1.2, 3.3, 5.7],
+        'cible': [0, 1, 1, 0, 0, 1, 1, 0, 1, 1]
+    }
+    df = pd.DataFrame(data)
+
+    result = quantile_discretization_with_target(df, 'var', 'cible', n_quantiles=4, seuil=0.2)
+    print(result)
+
+
 #Pour discrétiser une variable continue Weighted of Evidence
 def iv_woe(data,target,bins=5,show_woe=False,epsilon=1e-16):
     newDF,woeDF = pd.DataFrame(),pd.DataFrame()
@@ -583,7 +647,6 @@ def iv_woe(data,target,bins=5,show_woe=False,epsilon=1e-16):
             d0=pd.DataFrame({'x':data[ivars],'y':data[target]})
 
         #calculate the nb of events in each group (bin)
-
         d=d0.groupby("x",as_index=False).agg({"y":["count", "sum"]})
         d.columns = ["Cutoff","N","Events"]
 
