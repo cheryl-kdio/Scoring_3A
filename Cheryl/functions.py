@@ -662,17 +662,17 @@ def discretize_with_iv_woe(X_train, cible,date, col, id_client,bins=5, epsilon=1
 
     pprint(result)
 
-    # Extract the cutoffs to a dict
-    #if result[1]["IV"].sum() != 0:  # Si l'IV n'est pas nul, discrétiser
-        # Extraire les cutoffs (intervalles)
     cutoffs = result[1]["Cutoff"].unique()
     cutoffs = cutoffs
     # Si les cutoffs sont des intervalles, extraire les bornes
     if isinstance(cutoffs[0], pd.Interval):
         bins_edges = sorted(set([interval.left for interval in cutoffs] + [interval.right for interval in cutoffs]))
+        bins_edges[0] = -np.inf  # Première borne : -inf
+        bins_edges[-1] = np.inf 
     else:
         # Sinon, traiter les cutoffs comme des valeurs discrètes (par exemple pour des variables catégoriques)
         bins_edges = sorted(cutoffs)
+        bins_edges = [-np.inf] + bins_edges + [np.inf]  # Ajouter -inf et +inf
     
     # Discrétiser la colonne en utilisant les bornes et ajouter la colonne discrétisée avec suffixe "_cut"
     discretized_data[col + "_dis"] = pd.cut(X_train[col].copy(), bins=bins_edges, include_lowest=True, duplicates='drop')
