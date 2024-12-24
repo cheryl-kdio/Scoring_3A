@@ -86,7 +86,7 @@ def plot_cat_vars_distributions(data, vars_list, cols=2):
     for j in range(i + 1, len(axes)):
         fig.delaxes(axes[j])
     
-    fig.suptitle("Distribution des modalités", fontsize=16, x=0.0, y=1.02, ha='left') 
+    fig.suptitle("Distribution des variables catégorielles", fontsize=16, x=0.0, y=1.02, ha='left') 
     
     plt.tight_layout()
     plt.show()
