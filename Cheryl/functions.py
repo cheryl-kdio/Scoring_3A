@@ -752,10 +752,6 @@ def discretize_with_intervals(data, intervals_by_variable, date, cible):
     return df, new_variables
 
 
-import pandas as pd
-from scipy.stats import f_oneway
-
-
 def perform_anova(df, continuous_var, target_name):
     anova_result = []
     for col in continuous_var :
@@ -778,3 +774,95 @@ def perform_kruskal_wallis(df, continuous_var,target_name):
     return result_df
 
 
+import statsmodels.api as sm
+import numpy as np
+import pandas as pd
+from sklearn.metrics import roc_auc_score, precision_recall_curve, auc
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+from tqdm import tqdm
+
+def logit_reg(cat_vars, cible, y, X_train_reg, modalites_reference=[]):
+    # Préparer les données d'entraînement
+    new_X_train = X_train_reg[cat_vars].copy()
+    # Gestion des variables catégorielles
+    if not modalites_reference:
+        modalites_reference = []
+        for var in cat_vars:
+            freq_defaut = (
+                X_train_reg.groupby(var, as_index=True)[cible]
+                .mean()
+                .reset_index()
+                .sort_values(by=cible, ascending=True)
+                .reset_index(drop=True)
+            )
+            modalites_reference.append(var + "_" + str(freq_defaut[var].iloc[0]))
+
+    X_encoded = pd.get_dummies(new_X_train, columns=cat_vars).copy()
+
+    # Supprimer les modalités de référence
+    columns_to_drop = [col for col in modalites_reference if col in X_encoded.columns]
+    X_encoded = X_encoded.drop(columns_to_drop, axis=1).copy()
+
+    # Ajouter une constante pour la régression
+    X = sm.add_constant(X_encoded)
+
+    # S'assurer que toutes les colonnes sont numériques
+    X = X.astype(float)
+
+    # Ajuster le modèle de régression logistique
+    model = sm.Logit(y, X)
+    result = model.fit(disp=False)
+
+    # Prédictions
+    y_pred_prob = result.predict(X)
+
+    # Calcul des métriques
+    auc_roc = roc_auc_score(y, y_pred_prob)
+    gini_index = 2 * auc_roc - 1
+    precision, recall, _ = precision_recall_curve(y, y_pred_prob)
+    auc_pr = auc(recall, precision)
+
+
+    vif = pd.DataFrame()
+    vif["Variable"] = X.columns
+    vif["VIF"] = [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
+
+    # Vérification des p-valeurs et VIF
+    pvaleurs_coeffs = result.pvalues
+    pvaleur_model = result.llr_pvalue
+
+    odds_ratios = pd.DataFrame(
+        {"OR": result.params, 
+        "IC_inf": result.conf_int()[0],
+        "IC_sup": result.conf_int()[1]}
+    )
+
+    odds_ratios = np.exp(odds_ratios)
+
+    flag_significativite = 0
+    if all(pvaleurs_coeffs <= 0.05) and pvaleur_model <= 0.05:
+        flag_significativite = 1
+
+    flag_VIF = 0
+    if all(vif["VIF"].iloc[1:] < 10):
+        flag_VIF = 1
+    
+    flag_OR = 0
+    # vérifier que les OR soient positifs et ne contiennet aps 1
+    if all(odds_ratios["OR"].iloc[1:] > 0) and (all(odds_ratios["IC_inf"].iloc[1:] > 1) or all(odds_ratios["IC_sup"].iloc[1:] < 1)):
+        flag_OR = 1
+    
+
+    return gini_index, auc_pr, flag_significativite, flag_VIF, flag_OR,result, modalites_reference
+
+
+import itertools
+
+def combinaisons(list_variables,nb_var):
+    """
+    Retourne toutes les combinaisons possibles de nb_var variables parmi la liste list_variables.
+    """
+    combinaisons = itertools.combinations(list_variables, nb_var)
+    liste_combinaisons = [c for c in list(combinaisons)]
+
+    return liste_combinaisons
