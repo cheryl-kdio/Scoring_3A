@@ -781,62 +781,91 @@ from sklearn.metrics import roc_auc_score, precision_recall_curve, auc
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from tqdm import tqdm
 
-def logit_reg(cat_vars, cible, y, X_train_reg, modalites_reference=[]):
-    # Préparer les données d'entraînement
-    new_X_train = X_train_reg[cat_vars].copy()
-    # Gestion des variables catégorielles
-    if not modalites_reference:
-        modalites_reference = []
-        for var in cat_vars:
-            freq_defaut = (
-                X_train_reg.groupby(var, as_index=True)[cible]
-                .mean()
-                .reset_index()
-                .sort_values(by=cible, ascending=True)
-                .reset_index(drop=True)
-            )
-            modalites_reference.append(var + "_" + str(freq_defaut[var].iloc[0]))
 
-    X_encoded = pd.get_dummies(new_X_train, columns=cat_vars).copy()
+def transf_logit_reg(cat_vars, cible, X_train_reg, X_test_reg=None):
+    new_X_train = X_train_reg[cat_vars].copy()
+    new_X_test = X_test_reg[cat_vars].copy() if X_test_reg is not None else None
+
+    # Gestion des variables catégorielles
+    modalites_reference = []
+    for var in cat_vars:
+        freq_defaut = (
+            X_train_reg.groupby(var, as_index=True)[cible]
+            .mean()
+            .reset_index()
+            .sort_values(by=cible, ascending=True)
+            .reset_index(drop=True)
+        )
+        modalites_reference.append(var + "_" + str(freq_defaut[var].iloc[0]))
+
+    X_train_encoded = pd.get_dummies(new_X_train, columns=cat_vars).copy()
+    if new_X_test is not None:
+        X_test_encoded = pd.get_dummies(new_X_test, columns=cat_vars).copy()
 
     # Supprimer les modalités de référence
-    columns_to_drop = [col for col in modalites_reference if col in X_encoded.columns]
-    X_encoded = X_encoded.drop(columns_to_drop, axis=1).copy()
+    columns_to_drop = [col for col in modalites_reference if col in X_train_encoded.columns]
+    X_train_encoded = X_train_encoded.drop(columns_to_drop, axis=1).copy()
+    if new_X_test is not None:
+        X_test_encoded = X_test_encoded.drop(columns_to_drop, axis=1).copy()
 
     # Ajouter une constante pour la régression
-    X = sm.add_constant(X_encoded)
+    X_train = sm.add_constant(X_train_encoded)
+    if new_X_test is not None:
+        X_test = sm.add_constant(X_test_encoded)
 
     # S'assurer que toutes les colonnes sont numériques
-    X = X.astype(float)
-
-    # Ajuster le modèle de régression logistique
-    model = sm.Logit(y, X)
-    result = model.fit(disp=False)
-
-    # Prédictions
-    y_pred_prob = result.predict(X)
-
-    # Calcul des métriques
-    auc_roc = roc_auc_score(y, y_pred_prob)
-    gini_index = 2 * auc_roc - 1
-    precision, recall, _ = precision_recall_curve(y, y_pred_prob)
-    auc_pr = auc(recall, precision)
+    X_train = X_train.astype(float)
+    if new_X_test is not None:
+        X_test = X_test.astype(float)
+    else:
+        X_test = None
+    
+    return X_train, X_test,modalites_reference
 
 
+def logit_reg(cat_vars, cible, y_train, X_train_reg, y_test=None, X_test_reg=None):
+    # Préparer les données d'entraînement
+    X_train, X_test, modalites_reference = transf_logit_reg(cat_vars, cible, X_train_reg, X_test_reg)
+
+    # Ajuster le modèle de régression logistique pour les données d'entraînement
+    model_train = sm.Logit(y_train, X_train)
+    result_train = model_train.fit(disp=False)
+
+    # Prédictions et métriques pour les données d'entraînement
+    y_pred_train = result_train.predict(X_train)
+    auc_roc_train = roc_auc_score(y_train, y_pred_train)
+    gini_index_train = 2 * auc_roc_train - 1
+    precision, recall, _ = precision_recall_curve(y_train, y_pred_train)
+    auc_pr_train = auc(recall, precision)
+
+    if X_test is not None:
+        # Ajuster le modèle pour les données de test (si disponibles)
+        model_test = sm.Logit(y_test, X_test)
+        result_test = model_test.fit(disp=False)
+
+        # Prédictions et métriques pour les données de test
+        y_pred_test = result_test.predict(X_test)
+        auc_roc_test = roc_auc_score(y_test, y_pred_test)
+        gini_index_test = 2 * auc_roc_test - 1
+        precision, recall, _ = precision_recall_curve(y_test, y_pred_test)
+        auc_pr_test = auc(recall, precision)
+    else:
+        auc_roc_test = gini_index_test = auc_pr_test = None
+
+    # Calcul des VIF pour les variables explicatives
     vif = pd.DataFrame()
-    vif["Variable"] = X.columns
-    vif["VIF"] = [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
+    vif["Variable"] = X_train.columns
+    vif["VIF"] = [variance_inflation_factor(X_train.values, i) for i in range(X_train.shape[1])]
 
-    # Vérification des p-valeurs et VIF
-    pvaleurs_coeffs = result.pvalues
-    pvaleur_model = result.llr_pvalue
+    # Vérification des p-valeurs et des VIF
+    pvaleurs_coeffs = result_train.pvalues
+    pvaleur_model = result_train.llr_pvalue
 
     odds_ratios = pd.DataFrame(
-        {"OR": result.params, 
-        "IC_inf": result.conf_int()[0],
-        "IC_sup": result.conf_int()[1]}
+        {"OR": result_train.params, 
+         "IC_inf": result_train.conf_int()[0],
+         "IC_sup": result_train.conf_int()[1]}
     )
-
     odds_ratios = np.exp(odds_ratios)
 
     flag_significativite = 0
@@ -846,14 +875,14 @@ def logit_reg(cat_vars, cible, y, X_train_reg, modalites_reference=[]):
     flag_VIF = 0
     if all(vif["VIF"].iloc[1:] < 10):
         flag_VIF = 1
-    
-    flag_OR = 0
-    # vérifier que les OR soient positifs et ne contiennet aps 1
-    if all(odds_ratios["OR"].iloc[1:] > 0) and (all(odds_ratios["IC_inf"].iloc[1:] > 1) or all(odds_ratios["IC_sup"].iloc[1:] < 1)):
-        flag_OR = 1
-    
 
-    return gini_index, auc_pr, flag_significativite, flag_VIF, flag_OR,result, modalites_reference
+    flag_OR = 0
+    if all(odds_ratios["OR"].iloc[1:] > 0) and (
+        all(odds_ratios["IC_inf"].iloc[1:] > 1) or all(odds_ratios["IC_sup"].iloc[1:] < 1)
+    ):
+        flag_OR = 1
+
+    return gini_index_train, auc_pr_train, gini_index_test, auc_pr_test, flag_significativite, flag_VIF, flag_OR, result_train, modalites_reference
 
 
 import itertools
@@ -866,3 +895,211 @@ def combinaisons(list_variables,nb_var):
     liste_combinaisons = [c for c in list(combinaisons)]
 
     return liste_combinaisons
+
+def calculate_individual_scores(df_sc, df_individuals):
+    """
+    Calcule les scores des modalités associées à chaque individu et ajoute 
+    la somme des scores dans le DataFrame des individus.
+
+    Args:
+        df_sc (pd.DataFrame): Une DataFrame contenant les scores par modalité (`SC(j, i)`).
+            Elle doit inclure les colonnes `Modalities_merge` (concaténation variable_modalité) et `SC(j, i)`.
+        df_individuals (pd.DataFrame): Une DataFrame contenant les données des individus,
+            où chaque colonne est une variable et chaque valeur est une modalité.
+
+    Returns:
+        pd.DataFrame: Le DataFrame des individus avec une colonne supplémentaire `Total_Score`.
+    """
+    df = df_individuals.copy()
+    # Créer un dictionnaire pour rechercher rapidement les scores des modalités
+    modality_scores = df_sc.set_index("Modalities_merge")["SC(j, i)"].to_dict()
+
+    # Calculer les scores totaux pour chaque individu
+    total_scores = []
+    for idx, row in tqdm(df_individuals.iterrows()):
+        total_score = 0
+        for variable, modality in row.items():
+            # Construire la clé variable_modalité
+            modality_merge = f"{variable}_{modality}"
+            # Ajouter le score de la modalité correspondante si elle existe dans df_sc
+            total_score += modality_scores.get(modality_merge, 0)
+        total_scores.append(total_score)
+    
+    # Ajouter les scores totaux au DataFrame des individus
+    df["score"] = total_scores
+    return df
+
+# Initialisation de SC
+
+def compute_score(vars_selected,coefficients,X_train_reg,cible):
+    SC = {}
+    # Calcul des coefficients pour chaque variable
+    for var in vars_selected:
+        var_coeffs = coefficients[coefficients.index.str.startswith(var)]
+        min_coef = var_coeffs.min()
+        var_coeffs = var_coeffs - min_coef
+        alpha_j = var_coeffs.max()
+
+        # Compute the denominator Σ_j max(c(j, i))
+        denominator = sum(coefficients[coefficients.index.str.startswith(var)].max() for var in vars_selected)
+        score_max = coefficients[coefficients.index.str.startswith(var)].max()
+
+        # Calculate SC and CTR
+        CTR = score_max / 10  # Calcul de CTR
+        
+        # Afficher les proportions pour toutes les modalités
+        prop_count = X_train_reg[var].value_counts(normalize=True)
+        tx_defaut = X_train_reg.groupby(var)[cible].mean()
+        
+        # Identifier la modalité la plus risquée (avec le taux de défaut maximal)
+        max_risk_modality = tx_defaut.idxmax()  # Modalité avec le taux de défaut maximal
+        max_risk_value = tx_defaut.max()       # Taux de défaut de la modalité la plus risquée
+
+        for modality, coef in zip(var_coeffs.index.str[len(var) + 1:], var_coeffs.values):
+            relative_gap = abs(tx_defaut.get(modality, 0) - max_risk_value) / max_risk_value if max_risk_value != 0 else 0
+
+            SC[modality] = {
+                "Variables" : var,
+                "Modalities_merge" : var + "_" + modality,
+                "coef" : coef,
+                "alpha_j": alpha_j,
+                "SC(j, i)": 1000 * abs(coef - alpha_j) / denominator,
+                "CTR": CTR  ,# Ajout de CTR,
+                "p_j" : prop_count.get(modality, 0),
+                "tx_defaut" : tx_defaut.get(modality, 0),
+                "relative_gap": relative_gap,
+                "m": prop_count.count(),
+                "n": len(vars_selected),
+            }
+
+    # Convertir les résultats en DataFrame pour une meilleure visualisation
+    SC_df = pd.DataFrame.from_dict(SC, orient="index").reset_index()
+    SC_df.columns = ["Variable_Modality", "Variables","Modalities_merge","coef", "alpha_j","SC(j, i)", "CTR","p_k","tx_defaut","relative_gap","m","n"]
+    SC_df = SC_df[["Variables", "Variable_Modality","Modalities_merge", "coef","alpha_j", "SC(j, i)", "CTR", "p_k", "tx_defaut", "relative_gap", "m", "n"]]
+
+
+    #S_j (note moyenne pondérée) pour chaque variable
+    SC_df['SC_j'] = SC_df.groupby('Variables')['SC(j, i)'].transform(lambda x: (x * SC_df.loc[x.index, 'p_k']).sum())
+
+    # Calcul de q_j pour chaque variable
+    q_j = {}
+    denominator=0
+    for var in vars_selected:
+        # Sous-ensemble pour la variable
+        var_data = SC_df[SC_df['Variables'] == var]
+        
+        # Numérateur : \(\sqrt{\sum_{k=1}^m p_k (SC(j, k) - SC_j)^2}\)
+        numerator = np.sqrt(np.sum(var_data['p_k'] * (var_data['SC(j, i)'] - var_data['SC_j'])**2))
+        denominator += numerator
+        q_j[var] = numerator
+
+
+    # diviser le numérateur par le dénominateur
+    for var in q_j.keys():
+        q_j[var] = q_j[var] / denominator
+
+    # Ajout des contributions q_j dans le DataFrame
+    SC_df['q_j'] = SC_df['Variables'].map(q_j)
+
+    SC_df.sort_values(by=["Variables", "coef"], inplace=True)
+    return SC_df
+
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def plot_kde_and_boxplot(score,cible):
+    """
+    Crée un graphique combinant une KDE et un boxplot pour visualiser les distributions des scores.
+
+    Args:
+        sample (pd.DataFrame): Contient les données échantillonnées avec les colonnes `score` et `label`.
+        sample_full (pd.DataFrame): Contient les données complètes avec les colonnes `score` et `label`.
+
+    Returns:
+        None: Affiche les graphiques.
+    """
+    sample = pd.DataFrame({
+        "score": score["score"],  # Copie la colonne 'score' de score
+        "label": score[cible].replace({0: 'sain', 1: 'défaut'})  # Remplace les valeurs 0 et 1 dans 'cible'
+    })
+
+    # Création des sous-graphiques
+    fig, ax = plt.subplot_mosaic(
+        """A
+        A
+        A
+        A
+        A
+        A
+        B
+        """
+    )
+
+    # On plot une KDE de sample selon le label, avec le kde qui s'arrête à 1000
+    sns.kdeplot(
+        data=sample, x='score', hue='label', common_norm=False, 
+        fill=True, ax=ax['A'], cut=0,legend=True
+    )
+    ax['A'].set_xticks([])
+    ax['A'].grid(False)
+    # On plot un boxplot de sample selon le label
+    sns.boxplot(
+        data=sample, x='score', hue='label', legend=False, ax=ax['B'], showfliers=False
+    )
+    # Labels et style final
+    ax['B'].set(xlabel='Points/1000')
+    sns.set_style('white')
+    plt.show()
+
+def plot_bar_stacked(score,cible):
+    # Pour chaque note /1000, on calcule la part en pourcentage de sain et la part de défaut
+    sample = pd.DataFrame({
+    "score": score["score"],  # Copie la colonne 'score' de score
+    "label": score[cible].replace({0: 'sain', 1: 'défaut'})  # Remplace les valeurs 0 et 1 dans 'cible'
+    })
+
+    # On arrondi le score au 5 le plus proche
+    sample['score_round'] = np.round(sample['score'] / 5) * 5
+
+    # Pour chaque note de score_round, on regarde la part de sain et la part de défaut
+    # et vide initialisé
+    part_df = pd.DataFrame(columns=['score_round', 'part_sain', 'part_dfo'])
+
+    # Boucle sur les scores
+    for score in sample['score_round'].unique():
+        sub_df = sample[sample['score_round'] == score]
+        # On calcule la part de sain
+        part_sain = sub_df[sub_df['label'] == 'sain'].shape[0] / sub_df.shape[0]
+        # On calcule la part de défaut
+        part_dfo = sub_df[sub_df['label'] == 'défaut'].shape[0] / sub_df.shape[0]
+        
+        # On met dans le part_df
+        part_df = pd.concat([part_df, pd.DataFrame({'score_round': [score], 
+                                                    'part_sain': [part_sain], 
+                                                    'part_dfo': [part_dfo]})])
+
+    # On ordonne part_df
+    part_df = part_df.sort_values(by='score_round')
+
+
+    # On plot le graphique de part df en bar empilés
+    fig, ax = plt.subplots()
+    part_df[['part_sain', 'part_dfo']].plot(ax=ax, kind='bar', stacked=True, width=0.8)
+
+    # On écrit les yticks en pourcentage
+    ax.set_yticklabels(['{:.0f}%'.format(x*100) for x in ax.get_yticks()])
+
+    # On écrit les xticks en diagonale
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
+
+    # On réécrit les xticks car ils sont illisibles
+    ax.set_xticklabels([str(int(x)) for x in part_df['score_round']])
+
+    # On affiche uniquement 1 tick sur 5
+    ax.xaxis.set_major_locator(plt.MaxNLocator(20))
+
+    ax.set(xlabel='Points/1000', ylabel='Part')
+    ax.legend(loc='upper left')
+    plt.show()
+
