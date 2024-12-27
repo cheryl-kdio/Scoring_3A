@@ -782,9 +782,10 @@ from statsmodels.stats.outliers_influence import variance_inflation_factor
 from tqdm import tqdm
 
 
-def transf_logit_reg(cat_vars, cible, X_train_reg, X_test_reg=None):
+def transf_logit_reg(cat_vars, cible, X_train_reg, X_test_reg=None, X_oot=None):
     new_X_train = X_train_reg[cat_vars].copy()
     new_X_test = X_test_reg[cat_vars].copy() if X_test_reg is not None else None
+    new_X_oot = X_oot[cat_vars].copy() if X_oot is not None else None
 
     # Gestion des variables catégorielles
     modalites_reference = []
@@ -799,33 +800,38 @@ def transf_logit_reg(cat_vars, cible, X_train_reg, X_test_reg=None):
         modalites_reference.append(var + "_" + str(freq_defaut[var].iloc[0]))
 
     X_train_encoded = pd.get_dummies(new_X_train, columns=cat_vars).copy()
-    if new_X_test is not None:
-        X_test_encoded = pd.get_dummies(new_X_test, columns=cat_vars).copy()
-
     # Supprimer les modalités de référence
     columns_to_drop = [col for col in modalites_reference if col in X_train_encoded.columns]
     X_train_encoded = X_train_encoded.drop(columns_to_drop, axis=1).copy()
-    if new_X_test is not None:
-        X_test_encoded = X_test_encoded.drop(columns_to_drop, axis=1).copy()
+
 
     # Ajouter une constante pour la régression
     X_train = sm.add_constant(X_train_encoded)
-    if new_X_test is not None:
-        X_test = sm.add_constant(X_test_encoded)
-
     # S'assurer que toutes les colonnes sont numériques
     X_train = X_train.astype(float)
+
     if new_X_test is not None:
+        X_test_encoded = pd.get_dummies(new_X_test, columns=cat_vars).copy()
+        X_test_encoded = X_test_encoded.drop(columns_to_drop, axis=1).copy()
+        X_test = sm.add_constant(X_test_encoded)
         X_test = X_test.astype(float)
     else:
         X_test = None
+
+    if new_X_oot is not None:
+        X_oot_encoded = pd.get_dummies(new_X_oot, columns=cat_vars).copy()
+        X_oot_encoded = X_oot_encoded.drop(columns_to_drop, axis=1).copy()
+        X_oot = sm.add_constant(X_oot_encoded)
+        X_oot = X_oot.astype(float)
+    else:
+        X_oot = None
     
-    return X_train, X_test,modalites_reference
+    return X_train, X_test,X_oot, modalites_reference
 
 
-def logit_reg(cat_vars, cible, y_train, X_train_reg, y_test=None, X_test_reg=None):
+def logit_reg(cat_vars, cible, y_train, X_train_reg, y_test=None, X_test_reg=None, y_oot=None, X_oot_reg=None):
     # Préparer les données d'entraînement
-    X_train, X_test, modalites_reference = transf_logit_reg(cat_vars, cible, X_train_reg, X_test_reg)
+    X_train, X_test,X_oot, modalites_reference = transf_logit_reg(cat_vars, cible, X_train_reg, X_test_reg,X_oot_reg)
 
     # Ajuster le modèle de régression logistique pour les données d'entraînement
     model_train = sm.Logit(y_train, X_train)
@@ -851,7 +857,21 @@ def logit_reg(cat_vars, cible, y_train, X_train_reg, y_test=None, X_test_reg=Non
         auc_pr_test = auc(recall, precision)
     else:
         auc_roc_test = gini_index_test = auc_pr_test = None
+    
+    if X_oot is not None:
+        # Ajuster le modèle pour les données de test (si disponibles)
+        model_oot = sm.Logit(y_oot, X_oot)
+        result_oot = model_oot.fit(disp=False)
 
+        # Prédictions et métriques pour les données OOT (si disponibles)
+        y_pred_oot = result_oot.predict(X_oot)
+        auc_roc_oot = roc_auc_score(y_oot, y_pred_oot)
+        gini_index_oot = 2 * auc_roc_oot - 1
+        precision, recall, _ = precision_recall_curve(y_oot, y_pred_oot)
+        auc_pr_oot = auc(recall, precision)
+    else:
+        auc_roc_oot = gini_index_oot = auc_pr_oot = None
+        
     # Calcul des VIF pour les variables explicatives
     vif = pd.DataFrame()
     vif["Variable"] = X_train.columns
@@ -882,7 +902,7 @@ def logit_reg(cat_vars, cible, y_train, X_train_reg, y_test=None, X_test_reg=Non
     ):
         flag_OR = 1
 
-    return gini_index_train, auc_pr_train, gini_index_test, auc_pr_test, flag_significativite, flag_VIF, flag_OR, result_train, modalites_reference
+    return gini_index_train, auc_pr_train, gini_index_test, auc_pr_test, gini_index_oot, auc_pr_oot, flag_significativite, flag_VIF, flag_OR, result_train, modalites_reference
 
 
 import itertools
