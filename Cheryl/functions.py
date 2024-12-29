@@ -905,6 +905,7 @@ def logit_reg(cat_vars, cible, y_train, X_train_reg, y_test=None, X_test_reg=Non
     return gini_index_train, auc_pr_train, gini_index_test, auc_pr_test, gini_index_oot, auc_pr_oot, flag_significativite, flag_VIF, flag_OR, result_train, modalites_reference
 
 
+
 import itertools
 
 def combinaisons(list_variables,nb_var):
