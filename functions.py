@@ -86,7 +86,7 @@ def plot_cat_vars_distributions(data, vars_list, cols=2):
     for j in range(i + 1, len(axes)):
         fig.delaxes(axes[j])
     
-    fig.suptitle("Distribution des modalités", fontsize=16, x=0.0, y=1.02, ha='left') 
+    fig.suptitle("Distribution des variables catégorielles", fontsize=16, x=0.0, y=1.02, ha='left') 
     
     plt.tight_layout()
     plt.show()
@@ -110,12 +110,14 @@ def tx_rsq_par_var(df, categ_vars, date, target, cols=2):
     num_vars = len(categ_vars)
     rows = math.ceil(num_vars / cols) 
 
-    fig, axes = plt.subplots(rows, cols, figsize=(15, rows * 5), sharex=False, sharey=False)
+    fig, axes = plt.subplots(rows, cols, figsize=(15, rows * 5), sharex=False, sharey=True)
+    # set ylim to 0-1
+    plt.ylim(0, 0.5)
     axes = axes.flatten()  # Aplatir les axes pour itération facile
 
     for i, categ_var in enumerate(categ_vars):
         # Calcul des moyennes par date et catégorie
-        df_times_series = (df.groupby([date, categ_var])[target].mean() * 100).reset_index()
+        df_times_series = (df.groupby([date, categ_var])[target].mean()).reset_index()
         df_pivot = df_times_series.pivot(index=date, columns=categ_var, values=target)
 
         # Création du graphique
@@ -569,6 +571,7 @@ def discretize_by_groups(df, cat_var, grouped_modalities,date,cible,id_client):
     return temp_df
 
 
+
 #Pour discrétiser une variable continue Weighted of Evidence
 def iv_woe(data,target,bins=5,show_woe=False,epsilon=1e-16):
     newDF,woeDF = pd.DataFrame(),pd.DataFrame()
@@ -583,7 +586,6 @@ def iv_woe(data,target,bins=5,show_woe=False,epsilon=1e-16):
             d0=pd.DataFrame({'x':data[ivars],'y':data[target]})
 
         #calculate the nb of events in each group (bin)
-
         d=d0.groupby("x",as_index=False).agg({"y":["count", "sum"]})
         d.columns = ["Cutoff","N","Events"]
 
@@ -615,12 +617,19 @@ def discretize_with_iv_woe(X_train, cible,date, numerical_columns, id_client,bin
     discretized_data = X_train[[date,cible,id_client]].copy()
     discretized_columns = []
     non_discretized_columns = []
-
+    cutoffs_dict = {}
     for col in numerical_columns:
         # Appliquer la fonction iv_woe pour obtenir les points de coupure
         result = iv_woe(X_train[[col] + [cible]], cible, bins=bins, show_woe=False, epsilon=epsilon)
 
+<<<<<<< HEAD
         if True:#result[1]["IV"].sum() != 0:  # Si l'IV n'est pas nul, discrétiser
+=======
+        # Extract the cutoffs to a dict
+        cutoffs_dict[col] = result[1]["Cutoff"].unique()
+
+        if result[1]["IV"].sum() != 0:  # Si l'IV n'est pas nul, discrétiser
+>>>>>>> b6ee813b4bafd1c7d82c74fe8cfc4fad71729650
             # Extraire les cutoffs (intervalles)
             cutoffs = result[1]["Cutoff"].unique()
             cutoffs = cutoffs
@@ -640,7 +649,7 @@ def discretize_with_iv_woe(X_train, cible,date, numerical_columns, id_client,bin
             discretized_data[col ] = X_train[col].copy()
             non_discretized_columns.append(col)
 
-    return discretized_data, discretized_columns, non_discretized_columns
+    return discretized_data, discretized_columns, non_discretized_columns,cutoffs_dict
 
 ############## Discretisation avec les arbres de decision
 
@@ -783,7 +792,37 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-def select_variables_and_plot_corr_matrix(pearson_res, kruskal_results, corr_threshold=0.6):
+def select_variables_to_drop(corr_mat, kruskal_res,threshold=0.7):
+    """
+    Trie les variables très corrélées entre elles
+    et sélectionne celles à supprimer en fonction des résultats de Kruskal-Wallis.
+    """
+    kruskal_res = kruskal_res.copy()
+
+    kruskal_res.set_index('Columns', inplace=True)
+    # Suppose that spearman_res is your DataFrame containing the Spearman correlations
+    # Mask to keep only the upper triangle (excluding the diagonal)
+    mask = np.triu(np.ones(corr_mat.shape), k=1).astype(bool)
+    high_corr = corr_mat.where(mask)
+
+    # Filter for correlations > threshold
+    high_corr_pairs = high_corr[abs(high_corr) >threshold].stack().index
+
+    #set() only to have unique values
+    numerical_to_drop = set()
+    for var1, var2 in high_corr_pairs:
+        if var1==var2:
+            continue
+        if abs(kruskal_res.loc[var1, 'Stat']) > abs(kruskal_res.loc[var2, 'Stat']):
+            numerical_to_drop.add(var2)
+        else:
+            numerical_to_drop.add(var1)
+    
+
+    kruskal_res.reset_index('Columns', inplace=True)
+    return numerical_to_drop
+
+def select_variables_and_plot_corr_matrix(pearson_res, kruskal_results, corr_threshold=0.6,plot=True,print_pairs=True):
     """
     Sélectionne des variables dont la corrélation est inférieure à un seuil donné, 
     en utilisant les résultats de Kruskal-Wallis pour déterminer la variable la plus pertinente
@@ -809,11 +848,11 @@ def select_variables_and_plot_corr_matrix(pearson_res, kruskal_results, corr_thr
     all_vars = set(pearson_res.columns)  # Créer une liste de toutes les variables
     corr_vars = set(high_corr_pairs.index.get_level_values(0)).union(set(high_corr_pairs.index.get_level_values(1)))  # Variables dans les paires corrélées
     non_corr_vars = list(all_vars - corr_vars)  # Variables qui ne sont dans aucune paire corrélée
-
-    # Afficher les paires corrélées et leurs corrélations
-    print("Paires de variables fortement corrélées (|ρ| > {:.1f}) :".format(corr_threshold))
-    for pair, corr_value in high_corr_pairs.items():
-        print(f"Paire {pair}: Corrélation = {corr_value:.2f}")
+    if print_pairs :
+        # Afficher les paires corrélées et leurs corrélations
+        print("Paires de variables fortement corrélées (|ρ| > {:.1f}) :".format(corr_threshold))
+        for pair, corr_value in high_corr_pairs.items():
+            print(f"Paire {pair}: Corrélation = {corr_value:.2f}")
 
     # Étape 2 : Comparer les statistiques de test pour chaque paire
     best_variables = []  # Liste des variables à retenir
@@ -835,16 +874,16 @@ def select_variables_and_plot_corr_matrix(pearson_res, kruskal_results, corr_thr
     print(best_variables)
 
     # Étape 3 : Tracer la matrice de corrélation pour les variables retenues
-    selected_corr_matrix = pearson_res.loc[best_variables, best_variables]  # Filtrer la matrice de corrélation
-    plt.figure(figsize=(12, 10))
+    if plot :
+        selected_corr_matrix = pearson_res.loc[best_variables, best_variables]  # Filtrer la matrice de corrélation
+        plt.figure(figsize=(12, 10))
 
-    sns.heatmap(selected_corr_matrix, cmap='coolwarm', annot=True, fmt=".2f", linewidths=0.5)  # Heatmap
-    plt.title('Matrice de Corrélation (Variables Sélectionnées)')
-    plt.show()
+        sns.heatmap(selected_corr_matrix, cmap='coolwarm', annot=True, fmt=".2f", linewidths=0.5)  # Heatmap
+        plt.title('Matrice de Corrélation (Variables Sélectionnées)')
+        plt.show()
 
     # Retourner les variables retenues
     return best_variables
-
 
 def discretize_with_intervals(data, intervals_by_variable, date, cible):
     """
@@ -904,11 +943,15 @@ def perform_kruskal_wallis(df, continuous_var,target_name):
     result_df = pd.DataFrame(kruskal_result,columns=["Columns","Stat","Pvalue"])
     return result_df
 
+
 # Application de modèles
+
 import statsmodels.api as sm 
 from sklearn.metrics import auc
 from sklearn.metrics  import roc_curve
 from statsmodels.stats.outliers_influence import variance_inflation_factor
+
+
 
 def reg_logistique(df_train,var_cible,categorical_variables,numerical_variables):
     risk_drivers = categorical_variables + numerical_variables
@@ -966,120 +1009,4 @@ def reg_logistique(df_train,var_cible,categorical_variables,numerical_variables)
 
     return risk_drivers, pvaleur_model, pvaleurs_coeffs.to_dict(),flag_significativite,vif,flag_VIF,roc_auc_train, fpr_train,tpr_train,model
 
-
-
-
-import pandas as pd
-
-import numpy as np
-
-from scipy.stats import chi2_contingency
-
-
-
-def discretize_variable(df, var_continuous, cible, n_classes=5, risk_threshold=0.3, min_class_size=0.05):
-
-    # DÃ©couper en N classes en utilisant pd.qcut()
-
-    df['class_bins'] = pd.qcut(df[var_continuous], q=n_classes, duplicates='drop')
-
-
-
-    # Calculer le taux de risque pour chaque classe
-
-    risk_rates = df.groupby('class_bins')[cible].mean()
-
-
-
-    # Regrouper les classes en fonction de leur poids cumulÃ© et de leur risque
-
-    grouped_classes = []
-
-    cumulative_weight = 0
-
-    group = []
-
-
-
-    for i, (interval, risk) in enumerate(risk_rates.items()):
-
-        group.append(interval)
-
-        cumulative_weight += df[df['class_bins'] == interval].shape[0] / df.shape[0]
-
-
-
-        if cumulative_weight >= min_class_size or i == len(risk_rates) - 1:
-
-            grouped_classes.append(group)
-
-            group = []
-
-            cumulative_weight = 0
-
-
-
-    # Filtrer les groupes avec un Ã©cart de risque significatif
-
-    final_groups = []
-
-    for group in grouped_classes:
-
-        if len(group) > 1:
-
-            group_risks = risk_rates[group]
-
-            relative_risk_diff = np.abs(group_risks.max() - group_risks.min()) / group_risks.mean()
-
-
-
-            if relative_risk_diff >= risk_threshold:
-
-                final_groups.append(group)
-
-
-
-    # Calculer les indicateurs statistiques Tschuprow et Cramer
-
-    def tschuprow_t(x, y):
-
-        contingency = pd.crosstab(x, y)
-
-        chi2, _, _, _ = chi2_contingency(contingency)
-
-        n = contingency.sum().sum()
-
-        return np.sqrt(chi2 / (n * min(contingency.shape)))
-
-
-
-    def cramers_v(x, y):
-
-        contingency = pd.crosstab(x, y)
-
-        chi2, _, _, _ = chi2_contingency(contingency)
-
-        n = contingency.sum().sum()
-
-        return np.sqrt(chi2 / (n * min(contingency.shape)))
-
-
-
-    tschuprow_t_values = []
-
-    cramers_v_values = []
-
-
-
-    for group in final_groups:
-
-        df['grouped_bins'] = pd.cut(df[var_continuous], bins=np.array([g.left for g in group] + [group[-1].right]), include_lowest=True)
-
-        tschuprow_t_values.append(tschuprow_t(df['grouped_bins'], df[cible]))
-
-        cramers_v_values.append(cramers_v(df['grouped_bins'], df[cible]))
-
-
-
-    return final_groups, tschuprow_t_values, cramers_v_values
 
