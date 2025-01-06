@@ -620,7 +620,7 @@ def discretize_with_iv_woe(X_train, cible,date, numerical_columns, id_client,bin
         # Appliquer la fonction iv_woe pour obtenir les points de coupure
         result = iv_woe(X_train[[col] + [cible]], cible, bins=bins, show_woe=False, epsilon=epsilon)
 
-        if result[1]["IV"].sum() != 0:  # Si l'IV n'est pas nul, discrétiser
+        if True:#result[1]["IV"].sum() != 0:  # Si l'IV n'est pas nul, discrétiser
             # Extraire les cutoffs (intervalles)
             cutoffs = result[1]["Cutoff"].unique()
             cutoffs = cutoffs
@@ -642,6 +642,65 @@ def discretize_with_iv_woe(X_train, cible,date, numerical_columns, id_client,bin
 
     return discretized_data, discretized_columns, non_discretized_columns
 
+############## Discretisation avec les arbres de decision
+
+from sklearn.tree import DecisionTreeClassifier
+import pandas as pd
+import numpy as np
+
+def discretize_with_decision_tree(X_train, cible, date, numerical_columns, id_client, max_depth=3, min_samples_leaf=0.05):
+    """
+    Discrétise les variables continues en utilisant des arbres de décision.
+    
+    Parameters:
+        X_train (pd.DataFrame): Données d'entraînement.
+        cible (str): Nom de la variable cible (binaire).
+        date (str): Nom de la colonne contenant les dates.
+        numerical_columns (list): Liste des colonnes numériques à discrétiser.
+        id_client (str): Nom de l'identifiant client.
+        max_depth (int): Profondeur maximale de l'arbre de décision.
+        min_samples_leaf (float): Proportion minimale d'observations par feuille.
+        
+    Returns:
+        discretized_data (pd.DataFrame): Données avec les colonnes discrétisées.
+        discretized_columns (list): Liste des colonnes discrétisées.
+        non_discretized_columns (list): Liste des colonnes non discrétisées.
+    """
+    discretized_data = X_train[[date, cible, id_client]].copy()
+    discretized_columns = []
+    non_discretized_columns = []
+
+    for col in numerical_columns:
+        try:
+            # Créer un arbre de décision pour discrétiser la variable
+            X = X_train[[col]].values
+            y = X_train[cible].values
+
+            tree = DecisionTreeClassifier(max_depth=max_depth, min_samples_leaf=min_samples_leaf)
+            tree.fit(X, y)
+
+            # Extraire les seuils de coupure
+            thresholds = sorted(tree.tree_.threshold[tree.tree_.threshold != -2])  # -2 indique un nœud terminal
+            if not thresholds:  # Si aucun seuil n'est trouvé, ne pas discrétiser
+                discretized_data[col] = X_train[col].copy()
+                non_discretized_columns.append(col)
+                print(f"Aucun seuil trouvé pour la colonne {col}. Non discrétisée.")
+                continue
+
+            # Ajouter les bornes minimales et maximales pour les bins
+            bins_edges = [float("-inf")] + thresholds + [float("inf")]
+
+            # Discrétiser la colonne en utilisant les seuils et ajouter "_dis" comme suffixe
+            discretized_data[col + "_dis"] = pd.cut(X_train[col].copy(), bins=bins_edges, include_lowest=True, duplicates='drop')
+            discretized_columns.append(col + "_dis")
+
+            print(f"Discrétisation de la colonne {col} avec les bornes: {bins_edges}")
+        except Exception as e:
+            print(f"Erreur lors de la discrétisation de la colonne {col}: {e}")
+            non_discretized_columns.append(col)
+            discretized_data[col] = X_train[col].copy()
+
+    return discretized_data, discretized_columns, non_discretized_columns
 
 ############# Discrétisation avec la méthode ChiMerge
 
